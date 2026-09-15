@@ -1,0 +1,358 @@
+import hashlib
+import json
+import os
+import re
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright
+
+
+# ============================================================
+# 設定
+# ============================================================
+
+URL = "https://cp.toyota.jp/rentacar/?padid=ag270_fr_sptop_onewayma"
+
+STATE_FILE = Path("state.json")
+
+
+# ============================================================
+# 文字列を整理
+# ============================================================
+
+def normalize(text: str) -> str:
+    """
+    ページの文字列を比較しやすい形に整理する。
+    """
+    lines = []
+
+    for line in text.splitlines():
+        line = re.sub(r"\s+", " ", line).strip()
+
+        if line:
+            lines.append(line)
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# Toyota「片道GO!」の関東・出発情報を取得
+# ============================================================
+
+def get_kanto_departures() -> str:
+
+    with sync_playwright() as p:
+
+        browser = p.chromium.launch(
+            headless=True
+        )
+
+        page = browser.new_page(
+            locale="ja-JP"
+        )
+
+        try:
+
+            # ------------------------------------------------
+            # Toyotaページを開く
+            # ------------------------------------------------
+
+            print("Toyotaページを開いています...")
+
+            page.goto(
+                URL,
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
+
+            # ページのJavaScriptが動くまで少し待つ
+            page.wait_for_timeout(5000)
+
+            print("ページを読み込みました")
+
+
+            # ------------------------------------------------
+            # 「出発」を選択
+            # ------------------------------------------------
+
+            print("「出発」を選択しています...")
+
+            departure = page.get_by_text(
+                "出発",
+                exact=True
+            ).first
+
+            # Toyotaのページでは別の要素が
+            # ポインターイベントを遮る場合があるため、
+            # JavaScriptから直接clickする。
+            departure.evaluate(
+                "(element) => element.click()"
+            )
+
+            page.wait_for_timeout(1500)
+
+            print("「出発」を選択しました")
+
+
+            # ------------------------------------------------
+            # 「関東」を選択
+            # ------------------------------------------------
+
+            print("「関東」を選択しています...")
+
+            kanto = page.get_by_text(
+                "関東",
+                exact=True
+            ).first
+
+            kanto.evaluate(
+                "(element) => element.click()"
+            )
+
+            page.wait_for_timeout(2000)
+
+            print("「関東」を選択しました")
+
+
+            # ------------------------------------------------
+            # 表示されているページ内容を取得
+            # ------------------------------------------------
+
+            text = page.locator(
+                "body"
+            ).inner_text()
+
+            print("ページ内容を取得しました")
+
+
+        finally:
+
+            browser.close()
+
+
+    # ========================================================
+    # 不要なヘッダー等を削除
+    # ========================================================
+
+    marker = "ご利用可能車種一覧"
+
+    if marker in text:
+
+        text = text[
+            text.index(marker):
+        ]
+
+
+    # ========================================================
+    # 文字列を正規化
+    # ========================================================
+
+    return normalize(text)
+
+
+# ============================================================
+# ntfyへ通知
+# ============================================================
+
+def publish_ntfy(message: str) -> None:
+
+    import urllib.request
+
+    # GitHub Secretsからntfyのトピックを取得
+    topic = os.environ["NTFY_TOPIC"]
+
+    data = message.encode(
+        "utf-8"
+    )
+
+    request = urllib.request.Request(
+
+        f"https://ntfy.sh/{topic}",
+
+        data=data,
+
+        method="POST",
+
+        headers={
+            "Title": "片道GO! 関東・出発に変更",
+            "Priority": "high",
+            "Tags": "car,rotating_light",
+            "Click": URL,
+        },
+    )
+
+
+    # ntfyへ送信
+
+    print("ntfyへ通知を送信しています...")
+
+    with urllib.request.urlopen(
+        request,
+        timeout=30
+    ) as response:
+
+        if response.status >= 300:
+
+            raise RuntimeError(
+                f"ntfy returned HTTP {response.status}"
+            )
+
+
+    print("ntfyへの通知を送信しました")
+
+
+# ============================================================
+# メイン処理
+# ============================================================
+
+def main():
+
+    print("========================================")
+    print("Toyota 片道GO! 監視開始")
+    print("========================================")
+
+
+    # --------------------------------------------------------
+    # 現在のToyotaページを取得
+    # --------------------------------------------------------
+
+    current = get_kanto_departures()
+
+
+    # --------------------------------------------------------
+    # 現在のページ内容からハッシュ値を作る
+    # --------------------------------------------------------
+
+    current_hash = hashlib.sha256(
+        current.encode("utf-8")
+    ).hexdigest()
+
+
+    print(
+        f"現在のハッシュ: {current_hash}"
+    )
+
+
+    # --------------------------------------------------------
+    # 前回の状態を読み込む
+    # --------------------------------------------------------
+
+    old_hash = None
+
+
+    if STATE_FILE.exists():
+
+        try:
+
+            state = json.loads(
+                STATE_FILE.read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            old_hash = state.get(
+                "hash"
+            )
+
+            print(
+                f"前回のハッシュ: {old_hash}"
+            )
+
+        except Exception as error:
+
+            print(
+                f"state.jsonの読み込みに失敗しました: {error}"
+            )
+
+
+    # --------------------------------------------------------
+    # 初回実行
+    # --------------------------------------------------------
+
+    if old_hash is None:
+
+        print(
+            "初回実行です。現在の状態を保存します。"
+        )
+
+        print(
+            "今回は通知を送信しません。"
+        )
+
+
+    # --------------------------------------------------------
+    # 前回から変更があった場合
+    # --------------------------------------------------------
+
+    elif old_hash != current_hash:
+
+        print(
+            "変更を検出しました！"
+        )
+
+
+        # 通知内容
+        message = (
+            "トヨタ「片道GO!」の\n"
+            "「関東 → 出発」に変更がありました。\n"
+            "\n"
+            "現在の掲載内容：\n"
+            "\n"
+            + current[:7000]
+            + "\n\n"
+            "詳細：\n"
+            + URL
+        )
+
+
+        # ntfy通知
+        publish_ntfy(
+            message
+        )
+
+
+    # --------------------------------------------------------
+    # 変更なし
+    # --------------------------------------------------------
+
+    else:
+
+        print(
+            "変更はありません。"
+        )
+
+
+    # --------------------------------------------------------
+    # 現在の状態を保存
+    # --------------------------------------------------------
+
+    STATE_FILE.write_text(
+
+        json.dumps(
+            {
+                "hash": current_hash
+            },
+            ensure_ascii=False,
+            indent=2
+        ),
+
+        encoding="utf-8"
+    )
+
+
+    print(
+        "現在の状態をstate.jsonに保存しました。"
+    )
+
+    print("========================================")
+    print("監視終了")
+    print("========================================")
+
+
+# ============================================================
+# プログラム開始
+# ============================================================
+
+if __name__ == "__main__":
+
+    main()
