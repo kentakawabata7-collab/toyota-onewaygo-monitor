@@ -146,9 +146,16 @@ def publish_ntfy(message: str) -> None:
         method="POST",
 
         headers={
-            "Title": "片道GO! 関東・出発に変更",
+
+            # HTTPヘッダーはASCII文字だけにする
+            # 日本語を入れるとurllibで
+            # UnicodeEncodeErrorが発生するため
+            "Title": "Toyota One-way GO Update",
+
             "Priority": "high",
+
             "Tags": "car,rotating_light",
+
             "Click": URL,
         },
     )
