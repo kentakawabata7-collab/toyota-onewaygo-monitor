@@ -848,18 +848,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
-
-    try:
-
-        main()
-
-    except Exception:
-
-        print("=" * 40)
-        print("エラーが発生しました。")
-
-        import traceback
-
-        traceback.print_exc()
-
-        raise
+    main()
+    
