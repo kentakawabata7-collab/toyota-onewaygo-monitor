@@ -21,14 +21,10 @@ TOYOTA_URL = (
 STATE_FILE = Path("state.json")
 LOG_DIR = Path("logs")
 
-# 監視方式のバージョン
 STATE_VERSION = 12
 
-# GitHub Actions / Windows 共通
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
 
-# テスト用
-# Windowsでは run_monitor.bat から TEST_MODE=1 を設定可能。
 TEST_MODE = os.environ.get("TEST_MODE", "0") == "1"
 
 
@@ -37,24 +33,21 @@ TEST_MODE = os.environ.get("TEST_MODE", "0") == "1"
 # ============================================================
 
 def normalize_line(text: str) -> str:
-    """空白などを整理して比較しやすくする。"""
     text = text.replace("\u3000", " ")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
 def canonical_vehicle_text(text: str) -> str:
-    """車種情報の表記を比較しやすくする。"""
     text = normalize_line(text)
-
-    # 全角スペース等を整理
     text = text.replace("ＨＶ", "HV")
-
     return text
 
 
 def sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        text.encode("utf-8")
+    ).hexdigest()
 
 
 # ============================================================
@@ -62,6 +55,7 @@ def sha256_text(text: str) -> str:
 # ============================================================
 
 def get_toyota_page_text(page) -> str:
+
     print("Toyotaページを開いています...")
 
     page.goto(
@@ -72,71 +66,82 @@ def get_toyota_page_text(page) -> str:
 
     print("ページを読み込みました")
 
-    # JavaScriptによる表示処理を待つ
     page.wait_for_timeout(3000)
 
     # --------------------------------------------------------
-    # 「出発」を選択
+    # 出発
     # --------------------------------------------------------
 
     print("「出発」を選択しています...")
 
-    departure = page.get_by_text("出発", exact=True).first
+    departure_locator = page.get_by_text(
+        "出発",
+        exact=True,
+    )
 
-    try:
-        count = page.get_by_text("出発", exact=True).count()
-    except Exception:
-        count = 0
+    count = departure_locator.count()
 
     print(f"「出発」候補数: {count}")
 
     if count == 0:
-        raise RuntimeError("「出発」が見つかりません。")
+        raise RuntimeError(
+            "「出発」が見つかりません。"
+        )
 
-    # JavaScriptクリック
-    departure.evaluate("(element) => element.click()")
+    departure_locator.first.evaluate(
+        "(element) => element.click()"
+    )
 
     print("「出発」を選択しました")
 
     page.wait_for_timeout(2000)
 
     # --------------------------------------------------------
-    # 「関東」を選択
+    # 関東
     # --------------------------------------------------------
 
     print("「関東」を選択しています...")
 
-    kanto = page.get_by_text("関東", exact=True).first
+    kanto_locator = page.get_by_text(
+        "関東",
+        exact=True,
+    )
 
-    try:
-        count = page.get_by_text("関東", exact=True).count()
-    except Exception:
-        count = 0
+    count = kanto_locator.count()
 
     print(f"「関東」候補数: {count}")
 
     if count == 0:
-        raise RuntimeError("「関東」が見つかりません。")
+        raise RuntimeError(
+            "「関東」が見つかりません。"
+        )
 
-    kanto.evaluate("(element) => element.click()")
+    kanto_locator.first.evaluate(
+        "(element) => element.click()"
+    )
 
     print("「関東」を選択しました")
 
-    # フィルター反映待ち
     page.wait_for_timeout(3000)
 
     # --------------------------------------------------------
     # 本文取得
     # --------------------------------------------------------
 
-    print("表示されている車両一覧を解析しています...")
+    print(
+        "表示されている車両一覧を解析しています..."
+    )
 
     body_text = page.locator("body").inner_text()
 
-    # デバッグ用本文を保存
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    debug_file = LOG_DIR / "debug_after_filters.txt"
+    debug_file = (
+        LOG_DIR / "debug_after_filters.txt"
+    )
 
     debug_file.write_text(
         body_text,
@@ -144,7 +149,7 @@ def get_toyota_page_text(page) -> str:
     )
 
     print(
-        f"診断用ページ本文を保存しました: "
+        "診断用ページ本文を保存しました: "
         f"{debug_file.resolve()}"
     )
 
@@ -155,24 +160,9 @@ def get_toyota_page_text(page) -> str:
 # 車両情報解析
 # ============================================================
 
-def extract_vehicle_records(body_text: str) -> list[str]:
-    """
-    Toyota 片道GO! の表示テキストから車両情報を抽出する。
-
-    現在確認できているページ構造:
-
-      出発店舗
-      返却店舗
-      車種
-      車両条件
-      出発期間
-      予約店舗名
-      電話番号
-
-    電話番号を見つけたところで1台分を確定する。
-
-    「車両一覧ヘッダー」の完全一致には依存しない。
-    """
+def extract_vehicle_records(
+    body_text: str,
+) -> list[str]:
 
     PHONE_PATTERN = re.compile(
         r"\d{2,4}-\d{2,4}-\d{3,4}"
@@ -185,78 +175,84 @@ def extract_vehicle_records(body_text: str) -> list[str]:
     lines = []
 
     for raw_line in body_text.splitlines():
+
         line = normalize_line(raw_line)
 
         if line:
             lines.append(line)
 
     # --------------------------------------------------------
-    # フッター以降は車両データではない
+    # フッター以降を除外
     # --------------------------------------------------------
 
-    footer_marker = "片道GO!返却可能店舗一覧"
+    footer_marker = (
+        "片道GO!返却可能店舗一覧"
+    )
 
     if footer_marker in lines:
-        footer_index = lines.index(footer_marker)
+
+        footer_index = lines.index(
+            footer_marker
+        )
+
         data_lines = lines[:footer_index]
+
     else:
+
         data_lines = lines
 
     # --------------------------------------------------------
-    # 「出発店舗」を探す
-    #
-    # 以前は車両一覧ヘッダー全体の一致を要求していたが、
-    # GitHub Actionsではそこが不安定だったため、
-    # 「出発店舗」を起点にする。
+    # 出発店舗を探す
     # --------------------------------------------------------
 
     start_index = None
 
     for i, line in enumerate(data_lines):
+
         if line == "出発店舗":
+
             start_index = i + 1
             break
 
     if start_index is None:
+
         raise RuntimeError(
-            "車両データの開始位置（出発店舗）が見つかりません。"
+            "車両データの開始位置"
+            "（出発店舗）が見つかりません。"
         )
 
-    print(f"車両データ開始位置: {start_index}")
+    print(
+        f"車両データ開始位置: {start_index}"
+    )
 
     # --------------------------------------------------------
-    # 車両データを抽出
+    # 車両情報を解析
     # --------------------------------------------------------
 
     records = []
+
     current = []
 
     for line in data_lines[start_index:]:
 
         current.append(line)
 
-        # 電話番号が出たら1台分完成
-        phone_match = PHONE_PATTERN.search(line)
+        phone_match = PHONE_PATTERN.search(
+            line
+        )
 
         if not phone_match:
             continue
 
         # ----------------------------------------------------
-        # 現在のページでは1台あたり7行
-        #
-        # 1 出発店舗
-        # 2 返却店舗
-        # 3 車種
-        # 4 車両条件
-        # 5 出発期間
-        # 6 予約店舗
-        # 7 電話番号
+        # 1台分完成
         # ----------------------------------------------------
 
         if len(current) < 7:
+
             raise RuntimeError(
-                "車両データの行数が少なすぎます: "
-                f"{len(current)} 行\n"
+                "車両データの行数が"
+                f"少なすぎます: {len(current)} 行\n"
                 + "\n".join(current)
             )
 
@@ -269,9 +265,12 @@ def extract_vehicle_records(body_text: str) -> list[str]:
         reservation_store = current[-2]
         phone_line = current[-1]
 
-        phone_match = PHONE_PATTERN.search(phone_line)
+        phone_match = PHONE_PATTERN.search(
+            phone_line
+        )
 
         if not phone_match:
+
             raise RuntimeError(
                 "予約電話番号を取得できませんでした。\n"
                 + "\n".join(current)
@@ -279,14 +278,10 @@ def extract_vehicle_records(body_text: str) -> list[str]:
 
         phone_number = phone_match.group(0)
 
-        # ----------------------------------------------------
-        # 7行を超えていても、
-        # 最初の5項目＋最後の2項目を使用する
-        # ----------------------------------------------------
-
         if len(current) != 7:
+
             print(
-                f"注意: 1台あたりの取得行数が "
+                "注意: 1台あたりの取得行数が "
                 f"{len(current)} 行です。"
             )
 
@@ -297,7 +292,11 @@ def extract_vehicle_records(body_text: str) -> list[str]:
                 f"車種={canonical_vehicle_text(vehicle)}",
                 f"車両条件={normalize_line(condition)}",
                 f"出発期間={normalize_line(period)}",
-                f"予約電話番号={reservation_store} / {phone_number}",
+                (
+                    "予約電話番号="
+                    f"{reservation_store} / "
+                    f"{phone_number}"
+                ),
             ]
         )
 
@@ -306,60 +305,61 @@ def extract_vehicle_records(body_text: str) -> list[str]:
         current = []
 
     # --------------------------------------------------------
-    # 最後に電話番号まで到達しないデータが残った場合
+    # 未確定データ
     # --------------------------------------------------------
 
     if current:
+
         print(
             "警告: 最後に未確定の車両データがあります:"
         )
-        print("\n".join(current))
+
+        print(
+            "\n".join(current)
+        )
 
     if not records:
+
         raise RuntimeError(
             "車両情報を1台も解析できませんでした。"
         )
 
-    print(f"解析できた車両数: {len(records)}")
+    print(
+        f"解析できた車両数: {len(records)}"
+    )
 
     return records
 
 
 # ============================================================
-# Kanto / Departure の確認
+# 関東
 # ============================================================
 
-def filter_kanto_records(records: list[str]) -> list[str]:
-    """
-    現在のページは「関東 → 出発」で取得しているため、
-    基本的には全レコードが関東対象。
-
-    念のため空レコードを除外する。
-    """
+def filter_kanto_records(
+    records: list[str],
+) -> list[str]:
 
     filtered = []
 
     for record in records:
+
         if record.strip():
             filtered.append(record)
 
-    print(f"関東対象車両数: {len(filtered)}")
+    print(
+        f"関東対象車両数: {len(filtered)}"
+    )
 
     return filtered
 
 
 # ============================================================
-# テストモード
+# TEST_MODE
 # ============================================================
 
-def apply_test_change(records: list[str]) -> list[str]:
-    """
-    テスト用に先頭車両の「出発期間」だけ変更する。
-
-    TEST_MODE=1 の場合だけ使用する。
-
-    この変更結果は state.json には保存しない。
-    """
+def apply_test_change(
+    records: list[str],
+) -> list[str]:
 
     if not records:
         return records
@@ -368,13 +368,14 @@ def apply_test_change(records: list[str]) -> list[str]:
 
     first = test_records[0]
 
-    old_period_match = re.search(
+    match = re.search(
         r"出発期間=(.*)",
         first,
     )
 
-    if old_period_match:
-        old_period = old_period_match.group(1)
+    if match:
+
+        old_period = match.group(1)
 
         new_first = re.sub(
             r"出発期間=.*",
@@ -386,8 +387,12 @@ def apply_test_change(records: list[str]) -> list[str]:
         test_records[0] = new_first
 
         print("TEST_MODE=1")
-        print(f"変更前: {old_period}")
-        print("変更後: 【テスト変更】")
+        print(
+            f"変更前: {old_period}"
+        )
+        print(
+            "変更後: 【テスト変更】"
+        )
 
     return test_records
 
@@ -397,18 +402,26 @@ def apply_test_change(records: list[str]) -> list[str]:
 # ============================================================
 
 def load_state():
+
     if not STATE_FILE.exists():
         return None
 
     try:
+
         with STATE_FILE.open(
             "r",
             encoding="utf-8",
         ) as f:
+
             return json.load(f)
 
     except Exception as e:
-        print(f"state.jsonの読み込みに失敗しました: {e}")
+
+        print(
+            "state.jsonの読み込みに失敗しました: "
+            f"{e}"
+        )
+
         return None
 
 
@@ -416,18 +429,22 @@ def save_state(
     records: list[str],
     current_hash: str,
 ):
+
     state = {
         "version": STATE_VERSION,
         "hash": current_hash,
         "records": records,
     }
 
-    print("現在の状態をstate.jsonに保存します...")
+    print(
+        "現在の状態をstate.jsonに保存します..."
+    )
 
     with STATE_FILE.open(
         "w",
         encoding="utf-8",
     ) as f:
+
         json.dump(
             state,
             f,
@@ -435,11 +452,13 @@ def save_state(
             indent=2,
         )
 
-    print("現在の状態をstate.jsonに保存しました")
+    print(
+        "現在の状態をstate.jsonに保存しました"
+    )
 
 
 # ============================================================
-# 差分作成
+# 差分
 # ============================================================
 
 def make_diff(
@@ -447,8 +466,15 @@ def make_diff(
     new_records: list[str],
 ) -> str:
 
-    old_text = "\n\n".join(old_records).splitlines()
-    new_text = "\n\n".join(new_records).splitlines()
+    old_text = (
+        "\n\n".join(old_records)
+        .splitlines()
+    )
+
+    new_text = (
+        "\n\n".join(new_records)
+        .splitlines()
+    )
 
     diff = unified_diff(
         old_text,
@@ -462,10 +488,6 @@ def make_diff(
 
     if not diff_lines:
         return ""
-
-    # --------------------------------------------------------
-    # unified diffの見た目を整理
-    # --------------------------------------------------------
 
     result = []
 
@@ -481,16 +503,22 @@ def make_diff(
             continue
 
         if line.startswith("+"):
-            result.append("【追加】" + line[1:])
+
+            result.append(
+                "【追加】" + line[1:]
+            )
 
         elif line.startswith("-"):
-            result.append("【削除】" + line[1:])
+
+            result.append(
+                "【削除】" + line[1:]
+            )
 
     return "\n".join(result)
 
 
 # ============================================================
-# 実質的な変更判定
+# 変更判定
 # ============================================================
 
 def records_changed(
@@ -498,30 +526,25 @@ def records_changed(
     new_records: list[str],
 ) -> bool:
 
-    old_set = set(old_records)
-    new_set = set(new_records)
-
-    return old_set != new_set
+    return old_records != new_records
 
 
 # ============================================================
-# ntfy通知
+# ntfy
 # ============================================================
 
 def send_ntfy_notification(
     diff_text: str,
 ):
+
     if not NTFY_TOPIC:
+
         print(
             "NTFY_TOPICが設定されていないため、"
             "通知を送信しません。"
         )
-        return
 
-    # --------------------------------------------------------
-    # ASCIIだけのタイトルにしてWindows/GitHub Actionsの
-    # エンコード問題を避ける
-    # --------------------------------------------------------
+        return
 
     headers = {
         "Title": "Toyota One-way GO Update",
@@ -534,10 +557,13 @@ def send_ntfy_notification(
         + diff_text
     )
 
-    # ntfyのトピックURL
-    url = f"https://ntfy.sh/{NTFY_TOPIC}"
+    url = (
+        f"https://ntfy.sh/{NTFY_TOPIC}"
+    )
 
-    print("ntfy通知を送信しています...")
+    print(
+        "ntfy通知を送信しています..."
+    )
 
     response = requests.post(
         url,
@@ -548,21 +574,27 @@ def send_ntfy_notification(
 
     response.raise_for_status()
 
-    print("ntfy通知を送信しました")
+    print(
+        "ntfy通知を送信しました"
+    )
 
 
 # ============================================================
-# メイン処理
+# メイン
 # ============================================================
 
 def main():
 
-    print("Toyota 片道GO! 監視開始")
+    print(
+        "Toyota 片道GO! 監視開始"
+    )
 
     LOG_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
+
+    body_text = None
 
     try:
 
@@ -576,18 +608,22 @@ def main():
                 headless=True
             )
 
-            page = browser.new_page(
-                viewport={
-                    "width": 1920,
-                    "height": 1080,
-                },
-                locale="ja-JP",
-            )
-
             try:
-                body_text = get_toyota_page_text(page)
+
+                page = browser.new_page(
+                    viewport={
+                        "width": 1920,
+                        "height": 1080,
+                    },
+                    locale="ja-JP",
+                )
+
+                body_text = (
+                    get_toyota_page_text(page)
+                )
 
             finally:
+
                 browser.close()
 
         # ----------------------------------------------------
@@ -599,16 +635,16 @@ def main():
         )
 
         print(
-            f"ページ全体の解析済み車両数: "
+            "ページ全体の解析済み車両数: "
             f"{len(records)}"
         )
 
         # ----------------------------------------------------
-        # 関東対象
+        # 関東
         # ----------------------------------------------------
 
-        kanto_records = filter_kanto_records(
-            records
+        kanto_records = (
+            filter_kanto_records(records)
         )
 
         print(
@@ -622,16 +658,21 @@ def main():
         records_for_compare = kanto_records
 
         if TEST_MODE:
-            records_for_compare = apply_test_change(
-                kanto_records
+
+            records_for_compare = (
+                apply_test_change(
+                    kanto_records
+                )
             )
 
         # ----------------------------------------------------
-        # ハッシュ
+        # Hash
         # ----------------------------------------------------
 
-        state_text = "\n\n".join(
-            records_for_compare
+        state_text = (
+            "\n\n".join(
+                records_for_compare
+            )
         )
 
         current_hash = sha256_text(
@@ -643,7 +684,7 @@ def main():
         )
 
         # ----------------------------------------------------
-        # 前回状態
+        # State
         # ----------------------------------------------------
 
         state = load_state()
@@ -654,13 +695,12 @@ def main():
                 "前回の状態が存在しません。"
             )
 
-            # TEST_MODEの場合、
-            # テスト結果をbaselineとして保存しない
             if TEST_MODE:
 
                 print(
                     "TEST_MODE=1 のため、"
-                    "テスト結果をstate.jsonに保存しません。"
+                    "テスト結果をstate.jsonに"
+                    "保存しません。"
                 )
 
                 return
@@ -676,10 +716,6 @@ def main():
             )
 
             return
-
-        # ----------------------------------------------------
-        # state version
-        # ----------------------------------------------------
 
         old_version = state.get(
             "version",
@@ -701,11 +737,12 @@ def main():
         )
 
         print(
-            f"前回の状態バージョン: {old_version}"
+            f"前回の状態バージョン: "
+            f"{old_version}"
         )
 
         # ----------------------------------------------------
-        # バージョン変更
+        # Version変更
         # ----------------------------------------------------
 
         if old_version != STATE_VERSION:
@@ -715,12 +752,12 @@ def main():
                 "今回の取得結果を新しい基準値として登録します。"
             )
 
-            # TEST_MODEの場合は保存しない
             if TEST_MODE:
 
                 print(
                     "TEST_MODE=1 のため、"
-                    "テスト結果をstate.jsonに保存しません。"
+                    "テスト結果をstate.jsonに"
+                    "保存しません。"
                 )
 
                 return
@@ -737,7 +774,7 @@ def main():
             return
 
         # ----------------------------------------------------
-        # ハッシュが同じ
+        # Hash一致
         # ----------------------------------------------------
 
         if current_hash == old_hash:
@@ -746,7 +783,6 @@ def main():
                 "変更はありません。"
             )
 
-            # 通常モードではstateを更新
             if not TEST_MODE:
 
                 save_state(
@@ -764,14 +800,13 @@ def main():
             return
 
         # ----------------------------------------------------
-        # ハッシュが違う
+        # Hash変更
         # ----------------------------------------------------
 
         print(
             "ハッシュが変化しました。"
         )
 
-        # 実質的な変更を確認
         changed = records_changed(
             old_records,
             records_for_compare,
@@ -798,7 +833,7 @@ def main():
         )
 
         # ----------------------------------------------------
-        # 差分
+        # Diff
         # ----------------------------------------------------
 
         diff_text = make_diff(
@@ -817,7 +852,7 @@ def main():
             )
 
         # ----------------------------------------------------
-        # ntfy通知
+        # ntfy
         # ----------------------------------------------------
 
         send_ntfy_notification(
@@ -825,7 +860,7 @@ def main():
         )
 
         # ----------------------------------------------------
-        # state保存
+        # State保存
         # ----------------------------------------------------
 
         if TEST_MODE:
@@ -849,4 +884,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
