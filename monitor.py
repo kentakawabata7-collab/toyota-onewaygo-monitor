@@ -81,7 +81,9 @@ def get_toyota_page_text(page) -> str:
 
     count = departure_locator.count()
 
-    print(f"「出発」候補数: {count}")
+    print(
+        f"「出発」候補数: {count}"
+    )
 
     if count == 0:
         raise RuntimeError(
@@ -92,7 +94,9 @@ def get_toyota_page_text(page) -> str:
         "(element) => element.click()"
     )
 
-    print("「出発」を選択しました")
+    print(
+        "「出発」を選択しました"
+    )
 
     page.wait_for_timeout(2000)
 
@@ -100,7 +104,9 @@ def get_toyota_page_text(page) -> str:
     # 関東
     # --------------------------------------------------------
 
-    print("「関東」を選択しています...")
+    print(
+        "「関東」を選択しています..."
+    )
 
     kanto_locator = page.get_by_text(
         "関東",
@@ -109,7 +115,9 @@ def get_toyota_page_text(page) -> str:
 
     count = kanto_locator.count()
 
-    print(f"「関東」候補数: {count}")
+    print(
+        f"「関東」候補数: {count}"
+    )
 
     if count == 0:
         raise RuntimeError(
@@ -120,7 +128,9 @@ def get_toyota_page_text(page) -> str:
         "(element) => element.click()"
     )
 
-    print("「関東」を選択しました")
+    print(
+        "「関東」を選択しました"
+    )
 
     page.wait_for_timeout(3000)
 
@@ -132,7 +142,9 @@ def get_toyota_page_text(page) -> str:
         "表示されている車両一覧を解析しています..."
     )
 
-    body_text = page.locator("body").inner_text()
+    body_text = page.locator(
+        "body"
+    ).inner_text()
 
     LOG_DIR.mkdir(
         parents=True,
@@ -176,7 +188,9 @@ def extract_vehicle_records(
 
     for raw_line in body_text.splitlines():
 
-        line = normalize_line(raw_line)
+        line = normalize_line(
+            raw_line
+        )
 
         if line:
             lines.append(line)
@@ -195,7 +209,9 @@ def extract_vehicle_records(
             footer_marker
         )
 
-        data_lines = lines[:footer_index]
+        data_lines = lines[
+            :footer_index
+        ]
 
     else:
 
@@ -207,7 +223,9 @@ def extract_vehicle_records(
 
     start_index = None
 
-    for i, line in enumerate(data_lines):
+    for i, line in enumerate(
+        data_lines
+    ):
 
         if line == "出発店舗":
 
@@ -233,7 +251,9 @@ def extract_vehicle_records(
 
     current = []
 
-    for line in data_lines[start_index:]:
+    for line in data_lines[
+        start_index:
+    ]:
 
         current.append(line)
 
@@ -344,6 +364,7 @@ def filter_kanto_records(
     for record in records:
 
         if record.strip():
+
             filtered.append(record)
 
     print(
@@ -386,10 +407,14 @@ def apply_test_change(
 
         test_records[0] = new_first
 
-        print("TEST_MODE=1")
+        print(
+            "TEST_MODE=1"
+        )
+
         print(
             f"変更前: {old_period}"
         )
+
         print(
             "変更後: 【テスト変更】"
         )
@@ -404,6 +429,7 @@ def apply_test_change(
 def load_state():
 
     if not STATE_FILE.exists():
+
         return None
 
     try:
@@ -467,13 +493,15 @@ def make_diff(
 ) -> str:
 
     old_text = (
-        "\n\n".join(old_records)
-        .splitlines()
+        "\n\n".join(
+            old_records
+        ).splitlines()
     )
 
     new_text = (
-        "\n\n".join(new_records)
-        .splitlines()
+        "\n\n".join(
+            new_records
+        ).splitlines()
     )
 
     diff = unified_diff(
@@ -487,6 +515,7 @@ def make_diff(
     diff_lines = list(diff)
 
     if not diff_lines:
+
         return ""
 
     result = []
@@ -619,7 +648,9 @@ def main():
                 )
 
                 body_text = (
-                    get_toyota_page_text(page)
+                    get_toyota_page_text(
+                        page
+                    )
                 )
 
             finally:
@@ -644,7 +675,9 @@ def main():
         # ----------------------------------------------------
 
         kanto_records = (
-            filter_kanto_records(records)
+            filter_kanto_records(
+                records
+            )
         )
 
         print(
@@ -655,7 +688,9 @@ def main():
         # TEST_MODE
         # ----------------------------------------------------
 
-        records_for_compare = kanto_records
+        records_for_compare = (
+            kanto_records
+        )
 
         if TEST_MODE:
 
@@ -737,7 +772,7 @@ def main():
         )
 
         print(
-            f"前回の状態バージョン: "
+            "前回の状態バージョン: "
             f"{old_version}"
         )
 
@@ -843,7 +878,9 @@ def main():
 
         if diff_text:
 
-            print(diff_text)
+            print(
+                diff_text
+            )
 
         else:
 
@@ -877,14 +914,26 @@ def main():
                 current_hash,
             )
 
-except Exception as e:
+    except Exception as e:
 
-        print("========================================")
-        print("エラーが発生しました。")
-        print(str(e))
-        print("========================================")
+        print(
+            "========================================"
+        )
+
+        print(
+            "エラーが発生しました。"
+        )
+
+        print(
+            str(e)
+        )
+
+        print(
+            "========================================"
+        )
 
         raise
+
 
 # ============================================================
 # エントリーポイント
