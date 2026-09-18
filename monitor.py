@@ -21,30 +21,46 @@ TOYOTA_URL = (
 STATE_FILE = Path("state.json")
 LOG_DIR = Path("logs")
 
+# 監視方式のバージョン
 STATE_VERSION = 12
 
+# GitHub Actions / Windows BAT から設定
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
 
+# TEST_MODE=1 の場合、実際には変更がない場合でも
+# 1件目の出発期間を仮変更して通知テストを行う。
 TEST_MODE = os.environ.get("TEST_MODE", "0") == "1"
 
 
 # ============================================================
-# 共通処理
+# 文字列処理
 # ============================================================
 
 def normalize_line(text: str) -> str:
+    """
+    全角スペースや連続する空白を整理する。
+    """
     text = text.replace("\u3000", " ")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
 def canonical_vehicle_text(text: str) -> str:
+    """
+    車種表記の揺れをある程度統一する。
+    """
     text = normalize_line(text)
+
+    # 全角HV表記を半角に統一
     text = text.replace("ＨＶ", "HV")
+
     return text
 
 
 def sha256_text(text: str) -> str:
+    """
+    監視対象データのSHA-256ハッシュを生成。
+    """
     return hashlib.sha256(
         text.encode("utf-8")
     ).hexdigest()
@@ -55,6 +71,18 @@ def sha256_text(text: str) -> str:
 # ============================================================
 
 def get_toyota_page_text(page) -> str:
+    """
+    Toyota 片道GO! ページを開き、
+
+        出発
+        ↓
+        関東
+
+    を選択した後、車両データが表示されるまで待つ。
+
+    Toyota側の表示が遅い場合に備えて、
+    最大3回取得を試行する。
+    """
 
     print("Toyotaページを開いています...")
 
@@ -66,106 +94,210 @@ def get_toyota_page_text(page) -> str:
 
     print("ページを読み込みました")
 
+    # 初期JavaScript処理を待つ
     page.wait_for_timeout(3000)
 
     # --------------------------------------------------------
-    # 出発
+    # 最大3回試行
     # --------------------------------------------------------
 
-    print("「出発」を選択しています...")
+    for attempt in range(1, 4):
 
-    departure_locator = page.get_by_text(
-        "出発",
-        exact=True,
-    )
+        print("==============================")
+        print(f"車両データ取得試行 {attempt}/3")
+        print("==============================")
 
-    count = departure_locator.count()
+        try:
 
-    print(
-        f"「出発」候補数: {count}"
-    )
+            # ------------------------------------------------
+            # 「出発」
+            # ------------------------------------------------
 
-    if count == 0:
-        raise RuntimeError(
-            "「出発」が見つかりません。"
-        )
+            print("「出発」を選択しています...")
 
-    departure_locator.first.evaluate(
-        "(element) => element.click()"
-    )
+            departure_locator = page.get_by_text(
+                "出発",
+                exact=True,
+            )
 
-    print(
-        "「出発」を選択しました"
-    )
+            count = departure_locator.count()
 
-    page.wait_for_timeout(2000)
+            print(f"「出発」候補数: {count}")
+
+            if count == 0:
+                raise RuntimeError(
+                    "「出発」が見つかりません。"
+                )
+
+            # JavaScript click
+            departure_locator.first.evaluate(
+                "(element) => element.click()"
+            )
+
+            print("「出発」を選択しました")
+
+            # タブ切り替え処理待ち
+            page.wait_for_timeout(2000)
+
+            # ------------------------------------------------
+            # 「関東」
+            # ------------------------------------------------
+
+            print("「関東」を選択しています...")
+
+            kanto_locator = page.get_by_text(
+                "関東",
+                exact=True,
+            )
+
+            count = kanto_locator.count()
+
+            print(f"「関東」候補数: {count}")
+
+            if count == 0:
+                raise RuntimeError(
+                    "「関東」が見つかりません。"
+                )
+
+            # JavaScript click
+            kanto_locator.first.evaluate(
+                "(element) => element.click()"
+            )
+
+            print("「関東」を選択しました")
+
+            # 関東選択後のJavaScript処理待ち
+            page.wait_for_timeout(3000)
+
+            # ------------------------------------------------
+            # 車両データが表示されるまで待つ
+            # ------------------------------------------------
+
+            print(
+                "車両データの表示を待っています..."
+            )
+
+            vehicle_data_found = False
+
+            # 最大15秒待つ
+            for wait_count in range(15):
+
+                body_text = page.locator(
+                    "body"
+                ).inner_text()
+
+                # 電話番号が存在するか確認
+                phone_found = re.search(
+                    r"\d{2,4}-\d{2,4}-\d{3,4}",
+                    body_text,
+                )
+
+                # 車両一覧のヘッダーが存在するか確認
+                has_header = (
+                    "出発店舗" in body_text
+                    and "返却店舗" in body_text
+                    and "車種" in body_text
+                    and "出発期間" in body_text
+                )
+
+                if has_header and phone_found:
+
+                    print(
+                        "車両データを検出しました "
+                        f"（待機 {wait_count} 秒）"
+                    )
+
+                    vehicle_data_found = True
+                    break
+
+                if wait_count < 14:
+
+                    print(
+                        "車両データ未検出。"
+                        f"{wait_count + 1}秒待機します..."
+                    )
+
+                    page.wait_for_timeout(1000)
+
+            # ------------------------------------------------
+            # 最終的なページ本文取得
+            # ------------------------------------------------
+
+            body_text = page.locator(
+                "body"
+            ).inner_text()
+
+            # デバッグログ保存
+            LOG_DIR.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            debug_file = (
+                LOG_DIR
+                / "debug_after_filters.txt"
+            )
+
+            debug_file.write_text(
+                body_text,
+                encoding="utf-8",
+            )
+
+            print(
+                "診断用ページ本文を保存しました: "
+                f"{debug_file.resolve()}"
+            )
+
+            # ------------------------------------------------
+            # 電話番号の存在確認
+            # ------------------------------------------------
+
+            phone_found = re.search(
+                r"\d{2,4}-\d{2,4}-\d{3,4}",
+                body_text,
+            )
+
+            if phone_found:
+
+                print(
+                    "車両データを確認しました。"
+                )
+
+                return body_text
+
+            # 電話番号がない
+            print(
+                "車両データがまだ取得できませんでした。"
+            )
+
+        except Exception as e:
+
+            print(
+                f"試行 {attempt}/3 で"
+                "エラーが発生しました: "
+                f"{e}"
+            )
+
+        # ----------------------------------------------------
+        # 再試行
+        # ----------------------------------------------------
+
+        if attempt < 3:
+
+            print(
+                "Toyotaページを再確認します..."
+            )
+
+            page.wait_for_timeout(3000)
 
     # --------------------------------------------------------
-    # 関東
+    # 3回とも失敗
     # --------------------------------------------------------
 
-    print(
-        "「関東」を選択しています..."
+    raise RuntimeError(
+        "3回試行しましたが、"
+        "車両データを取得できませんでした。"
     )
-
-    kanto_locator = page.get_by_text(
-        "関東",
-        exact=True,
-    )
-
-    count = kanto_locator.count()
-
-    print(
-        f"「関東」候補数: {count}"
-    )
-
-    if count == 0:
-        raise RuntimeError(
-            "「関東」が見つかりません。"
-        )
-
-    kanto_locator.first.evaluate(
-        "(element) => element.click()"
-    )
-
-    print(
-        "「関東」を選択しました"
-    )
-
-    page.wait_for_timeout(3000)
-
-    # --------------------------------------------------------
-    # 本文取得
-    # --------------------------------------------------------
-
-    print(
-        "表示されている車両一覧を解析しています..."
-    )
-
-    body_text = page.locator(
-        "body"
-    ).inner_text()
-
-    LOG_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    debug_file = (
-        LOG_DIR / "debug_after_filters.txt"
-    )
-
-    debug_file.write_text(
-        body_text,
-        encoding="utf-8",
-    )
-
-    print(
-        "診断用ページ本文を保存しました: "
-        f"{debug_file.resolve()}"
-    )
-
-    return body_text
 
 
 # ============================================================
@@ -176,27 +308,38 @@ def extract_vehicle_records(
     body_text: str,
 ) -> list[str]:
 
+    """
+    Toyotaページ本文から車両情報を抽出する。
+
+    現在のToyotaページでは、1台あたりの取得行数が
+    7行とは限らず、12行になる場合がある。
+
+    そのため、電話番号を車両1台分の終端として扱う。
+    """
+
+    # --------------------------------------------------------
+    # 電話番号
+    # --------------------------------------------------------
+
     PHONE_PATTERN = re.compile(
         r"\d{2,4}-\d{2,4}-\d{3,4}"
     )
 
     # --------------------------------------------------------
-    # 行を整理
+    # 空行・空白を整理
     # --------------------------------------------------------
 
     lines = []
 
     for raw_line in body_text.splitlines():
 
-        line = normalize_line(
-            raw_line
-        )
+        line = normalize_line(raw_line)
 
         if line:
             lines.append(line)
 
     # --------------------------------------------------------
-    # フッター以降を除外
+    # フッター以降は解析対象外
     # --------------------------------------------------------
 
     footer_marker = (
@@ -218,14 +361,12 @@ def extract_vehicle_records(
         data_lines = lines
 
     # --------------------------------------------------------
-    # 出発店舗を探す
+    # 「出発店舗」を探す
     # --------------------------------------------------------
 
     start_index = None
 
-    for i, line in enumerate(
-        data_lines
-    ):
+    for i, line in enumerate(data_lines):
 
         if line == "出発店舗":
 
@@ -240,22 +381,24 @@ def extract_vehicle_records(
         )
 
     print(
-        f"車両データ開始位置: {start_index}"
+        f"車両データ開始位置: "
+        f"{start_index}"
     )
 
     # --------------------------------------------------------
-    # 車両情報を解析
+    # 車両データ解析
     # --------------------------------------------------------
 
     records = []
 
     current = []
 
-    for line in data_lines[
-        start_index:
-    ]:
+    for line in data_lines[start_index:]:
 
         current.append(line)
+
+        # 電話番号が見つかったら、
+        # その車両データの終端と判断する。
 
         phone_match = PHONE_PATTERN.search(
             line
@@ -264,25 +407,44 @@ def extract_vehicle_records(
         if not phone_match:
             continue
 
-        # ----------------------------------------------------
-        # 1台分完成
-        # ----------------------------------------------------
-
+        # 最低限必要な行数
         if len(current) < 7:
 
             raise RuntimeError(
                 "車両データの行数が"
-                f"少なすぎます: {len(current)} 行\n"
+                "少なすぎます: "
+                f"{len(current)} 行\n"
                 + "\n".join(current)
             )
 
+        # ----------------------------------------------------
+        # 現在のページ構造
+        #
+        # 先頭：
+        #   出発店舗
+        #   返却店舗
+        #   車種
+        #   車両条件
+        #   出発期間
+        #
+        # 末尾：
+        #   予約店舗
+        #   電話番号
+        #
+        # ----------------------------------------------------
+
         departure = current[0]
+
         return_store = current[1]
+
         vehicle = current[2]
+
         condition = current[3]
+
         period = current[4]
 
         reservation_store = current[-2]
+
         phone_line = current[-1]
 
         phone_match = PHONE_PATTERN.search(
@@ -292,18 +454,28 @@ def extract_vehicle_records(
         if not phone_match:
 
             raise RuntimeError(
-                "予約電話番号を取得できませんでした。\n"
+                "予約電話番号を"
+                "取得できませんでした。\n"
                 + "\n".join(current)
             )
 
         phone_number = phone_match.group(0)
 
+        # ----------------------------------------------------
+        # 12行構造になっている場合もあるため、
+        # 警告だけ出して処理は継続する。
+        # ----------------------------------------------------
+
         if len(current) != 7:
 
             print(
-                "注意: 1台あたりの取得行数が "
-                f"{len(current)} 行です。"
+                "注意: 1台あたりの"
+                f"取得行数が {len(current)} 行です。"
             )
+
+        # ----------------------------------------------------
+        # 正規化したレコードを作成
+        # ----------------------------------------------------
 
         record = "\n".join(
             [
@@ -322,21 +494,27 @@ def extract_vehicle_records(
 
         records.append(record)
 
+        # 次の車両へ
         current = []
 
     # --------------------------------------------------------
-    # 未確定データ
+    # 最後に電話番号まで到達しなかったデータ
     # --------------------------------------------------------
 
     if current:
 
         print(
-            "警告: 最後に未確定の車両データがあります:"
+            "警告: 最後に未確定の"
+            "車両データがあります:"
         )
 
         print(
             "\n".join(current)
         )
+
+    # --------------------------------------------------------
+    # 0件ならエラー
+    # --------------------------------------------------------
 
     if not records:
 
@@ -345,19 +523,26 @@ def extract_vehicle_records(
         )
 
     print(
-        f"解析できた車両数: {len(records)}"
+        f"解析できた車両数: "
+        f"{len(records)}"
     )
 
     return records
 
 
 # ============================================================
-# 関東
+# 関東フィルタ
 # ============================================================
 
 def filter_kanto_records(
     records: list[str],
 ) -> list[str]:
+
+    """
+    現在のページは「関東」をクリックした後の
+    表示内容を取得しているため、
+    取得されたレコードをそのまま関東対象とする。
+    """
 
     filtered = []
 
@@ -368,7 +553,8 @@ def filter_kanto_records(
             filtered.append(record)
 
     print(
-        f"関東対象車両数: {len(filtered)}"
+        f"関東対象車両数: "
+        f"{len(filtered)}"
     )
 
     return filtered
@@ -382,7 +568,18 @@ def apply_test_change(
     records: list[str],
 ) -> list[str]:
 
+    """
+    通知テスト用。
+
+    1台目の「出発期間」だけを
+    「【テスト変更】」に変更する。
+
+    この変更はメモリ上だけで行い、
+    TEST_MODEではstate.jsonへ保存しない。
+    """
+
     if not records:
+
         return records
 
     test_records = list(records)
@@ -423,10 +620,14 @@ def apply_test_change(
 
 
 # ============================================================
-# State
+# state.json
 # ============================================================
 
 def load_state():
+
+    """
+    state.jsonを読み込む。
+    """
 
     if not STATE_FILE.exists():
 
@@ -444,8 +645,8 @@ def load_state():
     except Exception as e:
 
         print(
-            "state.jsonの読み込みに失敗しました: "
-            f"{e}"
+            "state.jsonの読み込みに"
+            f"失敗しました: {e}"
         )
 
         return None
@@ -455,6 +656,10 @@ def save_state(
     records: list[str],
     current_hash: str,
 ):
+
+    """
+    現在の正常な監視状態を保存する。
+    """
 
     state = {
         "version": STATE_VERSION,
@@ -484,7 +689,7 @@ def save_state(
 
 
 # ============================================================
-# 差分
+# 差分生成
 # ============================================================
 
 def make_diff(
@@ -492,17 +697,17 @@ def make_diff(
     new_records: list[str],
 ) -> str:
 
-    old_text = (
-        "\n\n".join(
-            old_records
-        ).splitlines()
-    )
+    """
+    前回と今回の車両情報の差分を生成する。
+    """
 
-    new_text = (
-        "\n\n".join(
-            new_records
-        ).splitlines()
-    )
+    old_text = "\n\n".join(
+        old_records
+    ).splitlines()
+
+    new_text = "\n\n".join(
+        new_records
+    ).splitlines()
 
     diff = unified_diff(
         old_text,
@@ -522,6 +727,7 @@ def make_diff(
 
     for line in diff_lines:
 
+        # unified diffのヘッダーは除外
         if line.startswith("---"):
             continue
 
@@ -546,25 +752,29 @@ def make_diff(
     return "\n".join(result)
 
 
-# ============================================================
-# 変更判定
-# ============================================================
-
 def records_changed(
     old_records: list[str],
     new_records: list[str],
 ) -> bool:
 
+    """
+    車両情報そのものが変更されたか確認。
+    """
+
     return old_records != new_records
 
 
 # ============================================================
-# ntfy
+# ntfy通知
 # ============================================================
 
 def send_ntfy_notification(
     diff_text: str,
 ):
+
+    """
+    ntfy.shへ通知する。
+    """
 
     if not NTFY_TOPIC:
 
@@ -576,18 +786,24 @@ def send_ntfy_notification(
         return
 
     headers = {
+        # 日本語を避け、GitHub Actionsの
+        # ASCII環境でも安全にする。
         "Title": "Toyota One-way GO Update",
+
         "Priority": "high",
+
         "Tags": "car,rotating_light",
     }
 
     message = (
-        "Toyota 片道GO! の車両情報に変更があります。\n\n"
+        "Toyota 片道GO! の車両情報に"
+        "変更があります。\n\n"
         + diff_text
     )
 
     url = (
-        f"https://ntfy.sh/{NTFY_TOPIC}"
+        f"https://ntfy.sh/"
+        f"{NTFY_TOPIC}"
     )
 
     print(
@@ -609,7 +825,7 @@ def send_ntfy_notification(
 
 
 # ============================================================
-# メイン
+# メイン処理
 # ============================================================
 
 def main():
@@ -648,9 +864,7 @@ def main():
                 )
 
                 body_text = (
-                    get_toyota_page_text(
-                        page
-                    )
+                    get_toyota_page_text(page)
                 )
 
             finally:
@@ -658,7 +872,7 @@ def main():
                 browser.close()
 
         # ----------------------------------------------------
-        # 車両解析
+        # 車両情報解析
         # ----------------------------------------------------
 
         records = extract_vehicle_records(
@@ -675,13 +889,12 @@ def main():
         # ----------------------------------------------------
 
         kanto_records = (
-            filter_kanto_records(
-                records
-            )
+            filter_kanto_records(records)
         )
 
         print(
-            "「関東 → 出発」の車両情報を取得しました"
+            "「関東 → 出発」の"
+            "車両情報を取得しました"
         )
 
         # ----------------------------------------------------
@@ -701,13 +914,11 @@ def main():
             )
 
         # ----------------------------------------------------
-        # Hash
+        # ハッシュ
         # ----------------------------------------------------
 
-        state_text = (
-            "\n\n".join(
-                records_for_compare
-            )
+        state_text = "\n\n".join(
+            records_for_compare
         )
 
         current_hash = sha256_text(
@@ -715,14 +926,19 @@ def main():
         )
 
         print(
-            f"現在のハッシュ: {current_hash}"
+            f"現在のハッシュ: "
+            f"{current_hash}"
         )
 
         # ----------------------------------------------------
-        # State
+        # 前回状態
         # ----------------------------------------------------
 
         state = load_state()
+
+        # ----------------------------------------------------
+        # 初回
+        # ----------------------------------------------------
 
         if state is None:
 
@@ -752,6 +968,10 @@ def main():
 
             return
 
+        # ----------------------------------------------------
+        # 前回情報
+        # ----------------------------------------------------
+
         old_version = state.get(
             "version",
             0,
@@ -768,23 +988,25 @@ def main():
         )
 
         print(
-            f"前回のハッシュ: {old_hash}"
+            f"前回のハッシュ: "
+            f"{old_hash}"
         )
 
         print(
-            "前回の状態バージョン: "
+            f"前回の状態バージョン: "
             f"{old_version}"
         )
 
         # ----------------------------------------------------
-        # Version変更
+        # state version変更
         # ----------------------------------------------------
 
         if old_version != STATE_VERSION:
 
             print(
                 "監視方式を更新したため、"
-                "今回の取得結果を新しい基準値として登録します。"
+                "今回の取得結果を"
+                "新しい基準値として登録します。"
             )
 
             if TEST_MODE:
@@ -809,7 +1031,7 @@ def main():
             return
 
         # ----------------------------------------------------
-        # Hash一致
+        # ハッシュ一致
         # ----------------------------------------------------
 
         if current_hash == old_hash:
@@ -835,7 +1057,7 @@ def main():
             return
 
         # ----------------------------------------------------
-        # Hash変更
+        # ハッシュ変化
         # ----------------------------------------------------
 
         print(
@@ -846,6 +1068,10 @@ def main():
             old_records,
             records_for_compare,
         )
+
+        # ----------------------------------------------------
+        # 実質変更なし
+        # ----------------------------------------------------
 
         if not changed:
 
@@ -863,13 +1089,14 @@ def main():
 
             return
 
-        print(
-            "車両情報に実質的な変更を検出しました。"
-        )
+        # ----------------------------------------------------
+        # 実質変更あり
+        # ----------------------------------------------------
 
-        # ----------------------------------------------------
-        # Diff
-        # ----------------------------------------------------
+        print(
+            "車両情報に実質的な変更を"
+            "検出しました。"
+        )
 
         diff_text = make_diff(
             old_records,
@@ -889,7 +1116,7 @@ def main():
             )
 
         # ----------------------------------------------------
-        # ntfy
+        # ntfy通知
         # ----------------------------------------------------
 
         send_ntfy_notification(
@@ -897,14 +1124,15 @@ def main():
         )
 
         # ----------------------------------------------------
-        # State保存
+        # TEST_MODEの場合は保存しない
         # ----------------------------------------------------
 
         if TEST_MODE:
 
             print(
                 "TEST_MODE=1 のため、"
-                "テスト結果はstate.jsonに保存しません。"
+                "テスト結果はstate.jsonに"
+                "保存しません。"
             )
 
         else:
@@ -913,6 +1141,10 @@ def main():
                 kanto_records,
                 current_hash,
             )
+
+    # ========================================================
+    # エラー処理
+    # ========================================================
 
     except Exception as e:
 
@@ -940,4 +1172,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
